@@ -1,4 +1,4 @@
-# @semanaut/pi-dense-display
+# @semanaut/zpi-dense-display
 
 Dense display for [pi](https://github.com/earendil-works/pi) — tighten the TUI's vertical space. Rendering only; the session transcript and model context keep the original content.
 
@@ -9,5 +9,5 @@ Dense display for [pi](https://github.com/earendil-works/pi) — tighten the TUI
 ## Install
 
 ```bash
-pi install npm:@semanaut/pi-dense-display
+pi install npm:@semanaut/zpi-dense-display
 ```
