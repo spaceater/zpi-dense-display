@@ -1,0 +1,17 @@
+{
+  "name": "@semanaut/pi-dense-display",
+  "version": "0.1.0",
+  "description": "pi extension: dense display — tighten the TUI's vertical space; collapsed tool calls and thinking runs, markdown line compaction",
+  "type": "module",
+  "keywords": ["pi-package"],
+  "license": "MIT",
+  "files": ["extensions"],
+  "pi": {
+    "extensions": ["./extensions/*.ts"]
+  },
+  "peerDependencies": { "@earendil-works/pi-coding-agent": "*", "@earendil-works/pi-tui": "*" },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/semanaut/pi-dense-display.git"
+  }
+}
