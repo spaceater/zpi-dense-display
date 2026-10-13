@@ -1,5 +1,5 @@
 /**
- * Dense Display — tighten the TUI's vertical space. Rendering only: the session
+ * zpi-dense-display — tighten the TUI's vertical space. Rendering only: the session
  * transcript and the model context always keep the original content.
  *
  * A. Markdown post-render filtering: drop blank rendered lines and ``` fence
@@ -28,7 +28,7 @@ type ThemeLike = {
 // wrappers installed by an earlier load keep seeing the theme captured by the
 // current one (ctx.ui.theme is a live proxy, so it also follows theme changes).
 const state: { theme?: ThemeLike } =
-	((globalThis as any)[Symbol.for("pi-dense-display")] ??= { theme: undefined });
+	((globalThis as any)[Symbol.for("zpi-dense-display")] ??= { theme: undefined });
 
 /**
  * Replace a prototype method with `wrap(original)`. pi's own method is remembered
@@ -282,7 +282,7 @@ function patchTurnEndSpacer() {
 	});
 }
 
-export default function denseDisplayExtension(pi: ExtensionAPI) {
+export default function zpiDenseDisplayExtension(pi: ExtensionAPI) {
 	hook(Markdown.prototype as any, "render", (origRender: any) => function (this: any, width: number) {
 		return compactLines(origRender.call(this, width));
 	});
