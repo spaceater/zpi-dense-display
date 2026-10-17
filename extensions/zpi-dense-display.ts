@@ -1,23 +1,22 @@
 /**
- * zpi-dense-display — tighten the TUI's vertical space. Rendering only: the session
+ * zpi-dense-display — tighten the TUI's vertical space. Rendering only: the
  * transcript and the model context always keep the original content.
  *
- * A. Markdown post-render filtering: drop blank rendered lines and ``` fence
- *    borders. Running after parsing and rendering leaves the markdown source,
- *    paragraph/heading structure and code highlighting intact.
- * B. Component-tree tightening: finished tool calls collapse to one clickable
- *    line (click / Ctrl+O expands; multi-line rows get a slightly lighter
- *    background); thinking runs always show as one collapsed line carrying the
- *    last thinking line — or nothing at all when "hideThinkingBlock" is true;
- *    the blank rows pi pads messages and turns with are removed.
- * C. The widget container above the editor keeps a Spacer even when empty,
- *    which draws a fixed blank line over the input box; containers holding
- *    nothing but Spacers now render as nothing.
+ * A. Markdown: drop blank rendered lines and ``` fence borders.
+ * B. Tool rows: finished calls collapse to one clickable line —
+ *    `toolName 12s arg key=n outcome`; multi-line args and error outcomes keep
+ *    every line, compressed onto the row with alternating segment backgrounds;
+ *    numeric args always shown as key=value. Thinking runs collapse to one
+ *    line (or nothing when "hideThinkingBlock" is true). Padded blank rows
+ *    between messages/turns are removed; expanded/streaming rows keep a
+ *    slightly lighter background.
+ * C. Spacer-only containers above the editor render as nothing.
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { AssistantMessageComponent, ToolExecutionComponent, UserMessageComponent } from "@earendil-works/pi-coding-agent";
 import { Box, Container, Markdown, MouseRegion, Spacer, Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import * as os from "node:os";
 
 type ThemeLike = {
 	fg(color: string, text: string): string;
@@ -27,18 +26,13 @@ type ThemeLike = {
 	getBgAnsi(color: string): string;
 };
 
-// pi re-evaluates this file on /reload, so the state is shared on globalThis:
-// wrappers installed by an earlier load keep seeing the theme captured by the
-// current one (ctx.ui.theme is a live proxy, so it also follows theme changes).
+// pi re-evaluates this file on /reload; share state on globalThis so earlier
+// loads keep working (ctx.ui.theme is a live proxy, so theme changes follow).
 const state: { theme?: ThemeLike } =
 	((globalThis as any)[Symbol.for("zpi-dense-display")] ??= { theme: undefined });
 
-/**
- * Replace a prototype method with `wrap(original)`. pi's own method is remembered
- * per prototype, so re-loading this extension swaps the implementation instead of
- * stacking another wrapper on top of the previous one. (Any other extension that
- * wrapped the same method afterwards is unwrapped too.)
- */
+// Remember pi's own method per prototype so re-loading swaps the wrapper
+// instead of stacking another one on top.
 function hook(proto: any, method: string, wrap: (orig: any) => any): void {
 	const original = (proto.__denseOriginal ??= {});
 	const base = original[method] ?? proto[method];
@@ -47,11 +41,10 @@ function hook(proto: any, method: string, wrap: (orig: any) => any): void {
 	proto[method] = wrap(base);
 }
 
-/** One uncached rendered line — what the rows built here emit. */
 const lineComponent = (render: (width: number) => string[]) => ({ render, invalidate() {} });
 
-// truncateToWidth emits a reset before its ellipsis, which would drop the
-// active background/italic styling: strip it and append the caller's ellipsis.
+// truncateToWidth emits a reset before its ellipsis, dropping the active
+// background styling: strip it and append the caller's ellipsis.
 function truncateStyled(text: string, avail: number, ellipsis: string): string {
 	if (visibleWidth(text) <= avail) return text;
 	const head = avail > 1 ? truncateToWidth(text, avail - 1, "").replace(/\x1b\[0m$/, "") : "";
@@ -61,14 +54,12 @@ function truncateStyled(text: string, avail: number, ellipsis: string): string {
 const oneLine = (text: string) => text.replace(/\s+/g, " ").trim();
 
 // ---------------------------------------------------------------------------
-// A. Markdown post-render filtering
+// A. Markdown
 // ---------------------------------------------------------------------------
 
-/**
- * Drop blank lines and ``` fence borders. Border lines sit at the component's
- * base padding while code content lines sit two spaces deeper, so a literal
- * ``` inside code content (a nested fence example) is never mistaken for a border.
- */
+// Border lines sit at the component's base padding while code content lines
+// sit two spaces deeper, so a literal ``` inside code content is never
+// mistaken for a border.
 function compactLines(lines: string[]): string[] {
 	const plain = lines.map((l) => l.replace(/\x1b\[[0-9;]*m/g, ""));
 	const indentAt = (i: number) => plain[i].length - plain[i].trimStart().length;
@@ -78,21 +69,40 @@ function compactLines(lines: string[]): string[] {
 }
 
 // ---------------------------------------------------------------------------
-// B1. Tool calls collapse to one line
+// B1. Tool rows
 // ---------------------------------------------------------------------------
 
-/**
- * The row shows one line of a tool's argument: the first line that actually has
- * content, so leading blank lines (multi-line commands, pasted code) are skipped
- * instead of shifting the label right.
- */
-const firstLine = (text: string) => oneLine(text.split("\n").find((l) => l.trim()) ?? "");
-
-const primaryArg = (args: any): string => {
-	const v = args.command ?? args.path ?? args.pattern ?? args.query ?? args.filePath ??
-		Object.values(args).find((x) => typeof x === "string");
-	return typeof v === "string" ? firstLine(v) : "";
+// Mirror pi's renderToolPath → shortenPath2: home prefix collapses to "~".
+const shortenPath = (p: string): string => {
+	const home = os.homedir();
+	return p.startsWith(home) ? `~${p.slice(home.length)}` : p;
 };
+
+const isPathKey = (k: string): boolean => k === "path" || k === "filePath";
+
+// String arg to preview, as its kept lines. The priority chain skips
+// null/undefined/blank values; the insertion-order fallback covers unknown
+// schemas (codemode, MCP tools, …), where a home-prefixed string is almost
+// certainly a path and gets shortened like pi's own labels.
+const primaryString = (args: any): string[] => {
+	const usable = (x: unknown): x is string => typeof x === "string" && x.trim() !== "";
+	const hit = [
+		["command", args?.command], ["path", args?.path], ["pattern", args?.pattern],
+		["query", args?.query], ["filePath", args?.filePath],
+	].find(([, v]) => usable(v));
+	const value = hit
+		? (isPathKey(hit[0] as string) ? shortenPath(hit[1] as string) : hit[1] as string)
+		: shortenPath(Object.values(args ?? {}).find(usable) ?? "");
+	return keptLines(value);
+};
+
+// Numeric args ignore the chain and are always shown (read's offset/limit,
+// grep/ls/find's limit, …).
+const numericArgs = (args: any): string =>
+	Object.entries(args ?? {})
+		.filter(([, v]) => typeof v === "number")
+		.map(([k, v]) => `${k}=${v}`)
+		.join(" ");
 
 const textOutput = (result: any) => result.content.find((c: any) => c.type === "text")?.text ?? "";
 
@@ -106,48 +116,86 @@ const diffStats = (diff: string) => {
 	};
 };
 
-/** `toolName 12s arg — outcome`, plus the flags worth keeping: diff size, truncation. */
+const BG_LIGHTEN = 0.06;
+const BG_DARKEN = 0.2;
+
+function mixBgAnsi(code: string, mix: (v: number) => number): string | undefined {
+	const m = code.match(/^\x1b\[48;2;(\d+);(\d+);(\d+)m$/);
+	if (!m) return undefined;
+	return `\x1b[48;2;${mix(Number(m[1]))};${mix(Number(m[2]))};${mix(Number(m[3]))}m`;
+}
+
+const lightenBgAnsi = (code: string) => mixBgAnsi(code, (v) => Math.round(v + (255 - v) * BG_LIGHTEN));
+const darkenBgAnsi = (code: string) => mixBgAnsi(code, (v) => Math.round(v * (1 - BG_DARKEN)));
+
+// Rewriting the theme's own bg codes means a second pass finds nothing to
+// replace, so expanded/streaming rows stay lightened after /reload.
+function lightenToolBg(lines: string[], theme: ThemeLike): string[] {
+	for (const token of ["toolSuccessBg", "toolErrorBg"]) {
+		const from = theme.getBgAnsi(token);
+		const to = lightenBgAnsi(from);
+		if (!to) continue;
+		lines = lines.map((l) => (l.includes(from) ? l.split(from).join(to) : l));
+	}
+	return lines;
+}
+
+// Multi-line content on one row: the background alternates between the row's
+// tool background and its darkened variant, marking the original line breaks
+// without inserting any character. The separating space is emitted inside the
+// FOLLOWING segment, so the background switch happens one cell early, at the
+// space. Safe to compose because theme.fg resets only the foreground (ESC[39m)
+// and theme.bg only the background (ESC[49m); non-truecolor themes cannot mix
+// and fall back to foreground alternation.
+function compressLines(lines: string[], theme: ThemeLike, bgToken: string, fgToken = "accent"): string {
+	const rowBg = theme.getBgAnsi(bgToken);
+	const darker = darkenBgAnsi(rowBg);
+	if (!darker) {
+		return lines.map((l, i) => theme.fg(i % 2 ? "dim" : fgToken, i > 0 ? ` ${l}` : l)).join("");
+	}
+	return lines
+		.map((l, i) => `${i % 2 ? darker : rowBg}${theme.fg(fgToken, i > 0 ? ` ${l}` : l)}`)
+		.join("");
+}
+
+const keptLines = (text: string): string[] => text.split("\n").map(oneLine).filter((l) => l !== "");
+
 function buildLine(comp: any, theme: ThemeLike): { bg: string; text: string } {
 	const { result } = comp;
 	const failed = result.isError === true;
+	const bg = failed ? "toolErrorBg" : "toolSuccessBg";
 	let text = theme.fg("toolTitle", theme.bold(comp.toolName));
-	// Elapsed time sits between the name and the argument, rounded to whole
-	// seconds, only past 5s, and tinted by outcome with the same theme tokens the
-	// edit row uses for its +N / -M counts.
 	if (result.durationMs >= 5000) {
 		text += theme.fg(failed ? "error" : "success", ` ${Math.round(result.durationMs / 1000)}s`);
 	}
-	const arg = primaryArg(comp.args);
-	if (arg) text += theme.fg("accent", ` ${arg}`);
+	const argLines = primaryString(comp.args);
+	if (argLines.length === 1) {
+		text += theme.fg("accent", ` ${argLines[0]}`);
+	} else if (argLines.length > 1) {
+		// Trailing row-bg code returns the following segments to the row's own
+		// background after the alternating ones.
+		text += ` ${compressLines(argLines, theme, bg)}${theme.getBgAnsi(bg)}`;
+	}
+	const nums = numericArgs(comp.args);
+	if (nums) text += theme.fg("warning", ` ${nums}`);
 
 	if (failed) {
-		const outcome = oneLine(textOutput(result)) || "error";
-		return { bg: "toolErrorBg", text: text + theme.fg("toolOutput", ` — ${outcome}`) };
+		const outcomeLines = keptLines(textOutput(result));
+		if (outcomeLines.length <= 1) {
+			return { bg, text: text + theme.fg("toolOutput", ` ${outcomeLines[0] ?? "error"}`) };
+		}
+		// Trailing row-bg code hands the row's background back to the Box's padding.
+		return {
+			bg,
+			text: text + " " + compressLines(outcomeLines, theme, bg, "toolOutput") + theme.getBgAnsi(bg),
+		};
 	}
 	if (typeof result.details?.diff === "string") {
 		const { add, rem } = diffStats(result.details.diff);
 		text += theme.fg("success", ` +${add}`) + theme.fg("error", ` -${rem}`);
 	}
 	if (result.details?.truncation?.truncated) text += theme.fg("warning", " [trunc]");
-	return { bg: "toolSuccessBg", text };
-}
-
-// Multi-line rows get their background nudged toward white, so an expanded or
-// streaming block reads differently from a flat collapsed row. Only the theme's
-// own tool success/error backgrounds are touched, and rewriting them means a
-// second pass finds nothing to replace.
-const BG_LIGHTEN = 0.05;
-
-function lightenToolBg(lines: string[], theme: ThemeLike): string[] {
-	for (const token of ["toolSuccessBg", "toolErrorBg"]) {
-		const from = theme.getBgAnsi(token);
-		const m = from.match(/^\x1b\[48;2;(\d+);(\d+);(\d+)m$/);
-		if (!m) continue; // 256-color or default background: nothing to mix
-		const mix = (v: string) => Math.round(Number(v) + (255 - Number(v)) * BG_LIGHTEN);
-		const to = `\x1b[48;2;${mix(m[1])};${mix(m[2])};${mix(m[3])}m`;
-		lines = lines.map((l) => (l.includes(from) ? l.split(from).join(to) : l));
-	}
-	return lines;
+	return { bg, text };
 }
 
 // Self-rendered tool blocks (renderShell "self", e.g. edit) wrap their content
@@ -187,8 +235,7 @@ function patchToolExecutionComponent() {
 		this.contentText.paddingY = 0;
 		if (this.children[0] instanceof Spacer) this.children.splice(0, 1);
 
-		// Only a finished result collapses: streaming, executing, expanded and
-		// image outputs keep pi's layout, with the padding already dropped.
+		// Only a finished result collapses.
 		const theme = state.theme;
 		if (!theme || !this.result || this.isPartial || this.expanded || hasImages(this.result)) {
 			origUpdateDisplay.call(this);
@@ -200,11 +247,9 @@ function patchToolExecutionComponent() {
 		const box = this.contentBox;
 		box.clear();
 		this.hideComponent = false;
-		// pi applies outputPad only to the default-shell container, so self-shell
-		// (edit) and renderer-less tools would otherwise collapse at the Box default.
+		// pi applies outputPad only to the default-shell container; without this
+		// self-shell (edit) and renderer-less tools collapse at the Box default.
 		box.setPaddingX(this.outputPad);
-		// Render through the Box, so the line carries the expanded content's
-		// full-width background.
 		box.setBgFn((text: string) => theme.bg(built.bg, text));
 		box.addChild(new MouseRegion(
 			lineComponent((width) => [truncateStyled(built.text, Math.max(0, width), theme.fg("dim", "…"))]),
@@ -219,23 +264,19 @@ function patchToolExecutionComponent() {
 }
 
 // ---------------------------------------------------------------------------
-// B2. Thinking blocks: one collapsed line, or none
+// B2. Thinking rows
 // ---------------------------------------------------------------------------
 
-/** Last line of the last non-empty thinking block, collapsed to one line. */
 function lastThinkingLine(content: any): string | undefined {
 	const blocks = content.filter((c: any) => c.type === "thinking" && c.thinking.trim());
 	const text: string = blocks[blocks.length - 1]?.thinking.trim() ?? "";
 	return oneLine(text.slice(text.lastIndexOf("\n") + 1)) || undefined;
 }
 
-/**
- * pi renders a thinking run collapsed when
- * `thinkingVisibilityOverrides.get(run) ?? hideThinkingBlock` is truthy. A Map
- * that reports unknown runs as hidden collapses every run without touching the
- * user's setting; a click records an explicit false for that run, and pi's
- * setHideThinkingBlock clears the overrides.
- */
+// pi collapses a thinking run when `overrides.get(run) ?? hideThinkingBlock`
+// is truthy. A Map reporting unknown runs as hidden collapses every run
+// without touching the user's setting; a click records an explicit false, and
+// pi's setHideThinkingBlock clears the overrides.
 class ThinkingCollapsed extends Map<number, boolean> {
 	get(run: number): boolean {
 		return super.has(run) ? !!super.get(run) : true;
@@ -252,7 +293,6 @@ function patchAssistantMessageComponent() {
 
 			origUpdateContent.call(this, message, isStreaming);
 
-			// "hideThinkingBlock": true drops the row instead of collapsing it.
 			const hide = this.hideThinkingBlock === true;
 			const theme = state.theme;
 			const label = this.hiddenThinkingLabel;
@@ -273,6 +313,10 @@ function patchAssistantMessageComponent() {
 		});
 }
 
+// ---------------------------------------------------------------------------
+// B3. Turn-end spacers
+// ---------------------------------------------------------------------------
+
 // pi pads every turn with a Spacer before each user message; dropping it at
 // insert time makes turns end flush.
 function patchTurnEndSpacer() {
@@ -289,11 +333,9 @@ function patchTurnEndSpacer() {
 // C. Blank line above the editor
 // ---------------------------------------------------------------------------
 
-// pi's widget container above the editor carries a Spacer even when no
-// extension widget is registered, which shows up as a fixed blank line between
-// the transcript and the input box. A container whose children are all
-// Spacers has no visible content, so such containers render as nothing;
-// containers with real content (widget, header, pending messages) keep their
+// The widget container above the editor carries a Spacer even when empty. A
+// container whose children are all Spacers has no visible content, so such
+// containers render as nothing; containers with real content keep their
 // leading spacers.
 function patchSpacerOnlyContainers() {
 	hook(Container.prototype as any, "render", (origRender) => function (this: any, width: number): string[] {
@@ -302,10 +344,6 @@ function patchSpacerOnlyContainers() {
 		return origRender.call(this, width);
 	});
 }
-
-// ---------------------------------------------------------------------------
-// B3. Turn-end spacer (see patchTurnEndSpacer)
-// ---------------------------------------------------------------------------
 
 export default function zpiDenseDisplayExtension(pi: ExtensionAPI) {
 	hook(Markdown.prototype as any, "render", (origRender: any) => function (this: any, width: number) {
