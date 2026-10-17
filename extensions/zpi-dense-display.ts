@@ -10,6 +10,9 @@
  *    background); thinking runs always show as one collapsed line carrying the
  *    last thinking line — or nothing at all when "hideThinkingBlock" is true;
  *    the blank rows pi pads messages and turns with are removed.
+ * C. The widget container above the editor keeps a Spacer even when empty,
+ *    which draws a fixed blank line over the input box; containers holding
+ *    nothing but Spacers now render as nothing.
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -282,6 +285,28 @@ function patchTurnEndSpacer() {
 	});
 }
 
+// ---------------------------------------------------------------------------
+// C. Blank line above the editor
+// ---------------------------------------------------------------------------
+
+// pi's widget container above the editor carries a Spacer even when no
+// extension widget is registered, which shows up as a fixed blank line between
+// the transcript and the input box. A container whose children are all
+// Spacers has no visible content, so such containers render as nothing;
+// containers with real content (widget, header, pending messages) keep their
+// leading spacers.
+function patchSpacerOnlyContainers() {
+	hook(Container.prototype as any, "render", (origRender) => function (this: any, width: number): string[] {
+		const kids = this.children;
+		if (kids?.length && kids.every((k: any) => k instanceof Spacer)) return [];
+		return origRender.call(this, width);
+	});
+}
+
+// ---------------------------------------------------------------------------
+// B3. Turn-end spacer (see patchTurnEndSpacer)
+// ---------------------------------------------------------------------------
+
 export default function zpiDenseDisplayExtension(pi: ExtensionAPI) {
 	hook(Markdown.prototype as any, "render", (origRender: any) => function (this: any, width: number) {
 		return compactLines(origRender.call(this, width));
@@ -289,6 +314,7 @@ export default function zpiDenseDisplayExtension(pi: ExtensionAPI) {
 	patchToolExecutionComponent();
 	patchAssistantMessageComponent();
 	patchTurnEndSpacer();
+	patchSpacerOnlyContainers();
 
 	pi.on("session_start", async (_event, ctx: ExtensionContext) => {
 		state.theme = (ctx.ui as any).theme;

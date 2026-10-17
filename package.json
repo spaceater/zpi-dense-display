@@ -1,8 +1,8 @@
 {
   "name": "@semanaut/zpi-dense-display",
-  "version": "1.0.0",
-  "piVersion": "1.1.0",
-  "description": "pi extension: dense display — tighten the TUI's vertical space; collapsed tool calls and thinking runs, markdown line compaction; developed against the pi version given by the piVersion field",
+  "version": "1.1.0",
+  "piVersion": "1.2.0",
+  "description": "pi extension: dense display — tighten the TUI's vertical space; collapsed tool calls and thinking runs, markdown line compaction, no blank line above the editor; developed against the pi version given by the piVersion field",
   "type": "module",
   "keywords": [
     "pi-package"
