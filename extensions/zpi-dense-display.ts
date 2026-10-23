@@ -44,10 +44,13 @@ function hook(proto: any, method: string, wrap: (orig: any) => any): void {
 const lineComponent = (render: (width: number) => string[]) => ({ render, invalidate() {} });
 
 // truncateToWidth emits a reset before its ellipsis, dropping the active
-// background styling: strip it and append the caller's ellipsis.
+// background styling: strip it and append the caller's ellipsis, reserving the
+// ellipsis' own width so the result never exceeds `avail`.
 function truncateStyled(text: string, avail: number, ellipsis: string): string {
 	if (visibleWidth(text) <= avail) return text;
-	const head = avail > 1 ? truncateToWidth(text, avail - 1, "").replace(/\x1b\[0m$/, "") : "";
+	const reserve = visibleWidth(ellipsis);
+	if (avail <= reserve) return truncateToWidth(ellipsis, Math.max(0, avail), "");
+	const head = truncateToWidth(text, avail - reserve, "").replace(/\x1b\[0m$/, "");
 	return head + ellipsis;
 }
 
@@ -82,7 +85,7 @@ const isPathKey = (k: string): boolean => k === "path" || k === "filePath";
 
 // String arg to preview, as its kept lines. The priority chain skips
 // null/undefined/blank values; the insertion-order fallback covers unknown
-// schemas (codemode, MCP tools, …), where a home-prefixed string is almost
+// schemas (codemode, MCP tools, ...), where a home-prefixed string is almost
 // certainly a path and gets shortened like pi's own labels.
 const primaryString = (args: any): string[] => {
 	const usable = (x: unknown): x is string => typeof x === "string" && x.trim() !== "";
@@ -97,7 +100,7 @@ const primaryString = (args: any): string[] => {
 };
 
 // Numeric args ignore the chain and are always shown (read's offset/limit,
-// grep/ls/find's limit, …).
+// grep/ls/find's limit, ...).
 const numericArgs = (args: any): string =>
 	Object.entries(args ?? {})
 		.filter(([, v]) => typeof v === "number")
@@ -252,7 +255,7 @@ function patchToolExecutionComponent() {
 		box.setPaddingX(this.outputPad);
 		box.setBgFn((text: string) => theme.bg(built.bg, text));
 		box.addChild(new MouseRegion(
-			lineComponent((width) => [truncateStyled(built.text, Math.max(0, width), theme.fg("dim", "…"))]),
+			lineComponent((width) => [truncateStyled(built.text, Math.max(0, width), theme.fg("dim", "..."))]),
 			(event) => {
 				if (!this.result || event.type !== "click" || event.button !== "left") return undefined;
 				this.setExpanded(true);
@@ -300,7 +303,7 @@ function patchAssistantMessageComponent() {
 			// pi's label component would wrap; render the live line truncated.
 			const row = theme && label
 				? lineComponent((width) =>
-					[" ".repeat(pad) + theme.italic(theme.fg("thinkingText", truncateStyled(label, Math.max(0, width - pad), "…")))])
+					[" ".repeat(pad) + theme.italic(theme.fg("thinkingText", truncateStyled(label, Math.max(0, width - pad), "...")))])
 				: undefined;
 
 			const kids = this.contentContainer.children;
